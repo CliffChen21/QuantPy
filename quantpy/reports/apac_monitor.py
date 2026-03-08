@@ -19,6 +19,9 @@ from typing import Dict, List, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
 
+TRADING_DAYS_1Y = 252
+TRADING_DAYS_5Y = 1260
+
 
 def _ensure_non_empty(value: str, field_name: str) -> None:
     if not value or not value.strip():
@@ -80,6 +83,13 @@ def _sorted_unique(values: Sequence[float]) -> List[float]:
 
 def _closest_value(options: Sequence[float], target: float) -> float:
     return min(options, key=lambda item: abs(float(item) - target))
+
+
+def _standardize_matrix(matrix: np.ndarray) -> np.ndarray:
+    """Standardize a matrix column-wise with zero-variance protection."""
+    std = matrix.std(axis=0)
+    safe_std = np.where(std == 0, 1.0, std)
+    return (matrix - matrix.mean(axis=0)) / safe_std
 
 
 @dataclass(frozen=True)
@@ -599,13 +609,14 @@ class APACMarketMonitor:
                     }
                 )
             descriptions = f" ({quote_set.description})" if quote_set.description else ""
+            belly_index = len(quote_set.quotes) // 2
             narratives.append(
                 "<p><strong>{name}</strong>{desc}: front-end move {front}, belly {belly}, 10Y {ten}. "
                 "Daily changes point to {direction}. Source timestamps run through {timestamp}.</p>".format(
                     name=html.escape(quote_set.name),
                     desc=html.escape(descriptions),
                     front=_format_number(quote_set.quotes[0].current, 2),
-                    belly=_format_number(quote_set.quotes[min(2, len(quote_set.quotes) - 1)].current, 2),
+                    belly=_format_number(quote_set.quotes[belly_index].current, 2),
                     ten=_format_number(quote_set.quotes[-1].current, 2),
                     direction=html.escape(self._move_description(quote_set.quotes)),
                     timestamp=html.escape(max(item.timestamp for item in quote_set.quotes)),
@@ -821,7 +832,7 @@ class APACMarketMonitor:
             current = np.asarray(surface.current, dtype=float)
             previous = np.asarray(surface.previous, dtype=float)
             change = current - previous
-            atm_idx = min(range(len(surface.pillars)), key=lambda idx: abs(idx - (len(surface.pillars) - 1) / 2))
+            atm_idx = self._atm_index(surface.pillars)
             atm_change = float(np.mean(change[:, atm_idx]))
             skew_change = float(change[0, -1] - change[0, 0]) if current.shape[1] >= 2 else float("nan")
             narratives.append(
@@ -1023,8 +1034,8 @@ class APACMarketMonitor:
                     "Level": _format_pct(series.latest),
                     "Daily Change": _format_signed(series.change(1) * 10000.0, 1),
                     "Weekly Change": _format_signed(series.change(5) * 10000.0, 1),
-                    "1Y Percentile": _format_number(_percentile_rank(history[-252:], series.latest), 1),
-                    "5Y Percentile": _format_number(_percentile_rank(history[-1260:], series.latest), 1),
+                    "1Y Percentile": _format_number(_percentile_rank(history[-TRADING_DAYS_1Y:], series.latest), 1),
+                    "5Y Percentile": _format_number(_percentile_rank(history[-TRADING_DAYS_5Y:], series.latest), 1),
                     "Source": series.source,
                     "Timestamp": series.timestamp,
                 }
@@ -1036,10 +1047,16 @@ class APACMarketMonitor:
             "pca": pca,
             "dominant_factor": pca["dominant_factor"],
             "percentiles_1y": {
-                "10Y": _percentile_rank(list(by_tenor[target_tenors["10Y"]].values)[-252:], by_tenor[target_tenors["10Y"]].latest)
+                "10Y": _percentile_rank(
+                    list(by_tenor[target_tenors["10Y"]].values)[-TRADING_DAYS_1Y:],
+                    by_tenor[target_tenors["10Y"]].latest,
+                )
             },
             "percentiles_5y": {
-                "10Y": _percentile_rank(list(by_tenor[target_tenors["10Y"]].values)[-1260:], by_tenor[target_tenors["10Y"]].latest)
+                "10Y": _percentile_rank(
+                    list(by_tenor[target_tenors["10Y"]].values)[-TRADING_DAYS_5Y:],
+                    by_tenor[target_tenors["10Y"]].latest,
+                )
             },
             "source_summary": source_summary,
         }
@@ -1203,16 +1220,16 @@ class APACMarketMonitor:
             curvature.append(10000.0 * (2.0 * y10 - y5 - y30))
         return {"dates": dates, "level": level, "slope": slope, "curvature": curvature}
 
-    def _closest_historical_analog(self, curve: CurveDataset) -> Dict[str, str]:
+    def _closest_historical_analog(self, curve: CurveDataset) -> Dict[str, object]:
         by_tenor = curve.by_tenor()
         tenors = curve.tenors
         matrix = np.asarray([by_tenor[tenor].values for tenor in tenors], dtype=float).T
-        z_matrix = (matrix - matrix.mean(axis=0)) / np.where(matrix.std(axis=0) == 0, 1.0, matrix.std(axis=0))
+        z_matrix = _standardize_matrix(matrix)
         current = z_matrix[-1]
         if z_matrix.shape[0] <= 1:
             return {
                 "date": curve.latest_date,
-                "distance": "0.00",
+                "distance": 0.0,
                 "regime": "single-observation",
                 "source": ", ".join(sorted({item.source for item in curve.series})),
                 "timestamp": curve.latest_timestamp,
@@ -1235,6 +1252,14 @@ class APACMarketMonitor:
             "source": ", ".join(sorted({item.source for item in curve.series})),
             "timestamp": curve.latest_timestamp,
         }
+
+    @staticmethod
+    def _atm_index(pillars: Sequence[str]) -> int:
+        """Return the ATM pillar index, falling back to the middle pillar."""
+        for idx, pillar in enumerate(pillars):
+            if pillar.strip().upper() == "ATM":
+                return idx
+        return len(pillars) // 2
 
     @staticmethod
     def _aligned_correlation(left: TimeSeries, right: TimeSeries) -> float:
