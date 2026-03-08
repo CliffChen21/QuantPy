@@ -23,8 +23,9 @@ modelling, derivatives pricing, risk management, and deep-learning tooling.
    - [ml](#ml)
 4. [Quick-Start Examples](#quick-start-examples)
 5. [Running Tests](#running-tests)
-6. [Architecture & Design](#architecture--design)
-7. [Deep Learning Suggestions](#deep-learning-suggestions)
+6. [Reports](#reports)
+7. [Architecture & Design](#architecture--design)
+8. [Deep Learning Suggestions](#deep-learning-suggestions)
 
 ---
 
@@ -39,6 +40,7 @@ modelling, derivatives pricing, risk management, and deep-learning tooling.
 | **Instruments** | IRS, Cap/Floor, European swaption, Bermudan swaption, Auto-callable note |
 | **Risk** | Delta, Gamma, Vega, Nu, Rho (SABR), bucket DV01, parallel-shift scenarios |
 | **ML** | Neural-network surrogate pricer, RBF vol-surface interpolator, training-data generator |
+| **Reports** | Structured APAC rates / FX swap / CCS market-monitor generation with sourced charts and tables |
 
 ---
 
@@ -303,6 +305,24 @@ Radial-basis-function (RBF) vol surface interpolator / extrapolator:
 
 Generate `(X, y)` datasets by sampling parameter spaces and calling any
 pricer function.  Useful for training neural-network surrogate models.
+
+---
+
+### `reports`
+
+Structured report generation for sourced market-monitor workflows.
+
+**Classes**
+
+| Class | Description |
+|-------|-------------|
+| `APACMarketMonitor` | Builds a fixed-structure APAC rates / FX swap / CCS monitor |
+| `APACMarketMonitorInput` | Container for sourced curves, basis data, policy events, and vol surfaces |
+| `APACMarketMonitorReport` | Render-ready report with HTML/text output plus tables and charts |
+
+The report module is designed around explicit **source** and **timestamp**
+fields so that each tabular output and chart-driven narrative can be traced
+back to its market-data origin.
 
 ---
 
