@@ -26,4 +26,5 @@ __all__ = [
     "instruments",
     "risk",
     "ml",
+    "reports",
 ]
