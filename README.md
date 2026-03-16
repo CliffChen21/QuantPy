@@ -463,6 +463,101 @@ price = ac.price(hw, n_paths=50_000, underlying_vol=0.20, seed=42)
 print(f"AutoCall fair value: {price:,.0f}")
 ```
 
+### 8 – Dynamic hedge for a Bermudan swaption (swap + swaption replication)
+
+```python
+import math
+import numpy as np
+import matplotlib.pyplot as plt
+
+from quantpy.curves import DiscountCurve
+from quantpy.instruments import BermudanSwaption, EuropeanSwaption, InterestRateSwap
+from quantpy.models import HullWhiteModel
+from quantpy.risk import RiskEngine
+
+# 1) Build a simple curve and target Bermudan swaption
+rates = [0.035, 0.038, 0.040, 0.042, 0.044, 0.046, 0.048, 0.050]
+tenors = [0.25, 0.5, 1, 2, 3, 5, 10, 20]
+curve = DiscountCurve(tenors, [math.exp(-r * t) for r, t in zip(rates, tenors)])
+
+exercise_dates = [1.0, 2.0, 3.0, 4.0]
+swap_maturity = 5.0
+notional = 1_000_000
+strike = curve.par_swap_rate(swap_maturity)
+
+engine = RiskEngine(rate_bump=1e-4)
+a, sigma0 = 0.05, 0.01
+
+def bump_curve(base_curve, shift):
+    bumped_dfs = [df * math.exp(-shift * t) for t, df in zip(base_curve._times, base_curve._dfs)]
+    return DiscountCurve(list(base_curve._times), bumped_dfs)
+
+def bermudan_price(c, sigma=sigma0):
+    hw = HullWhiteModel(c, a=a, sigma=sigma)
+    berm = BermudanSwaption(exercise_dates, swap_maturity, strike, notional=notional, is_payer=True)
+    return berm.hull_white_price(hw, n_time_steps=40)
+
+def european_price(c, sigma=sigma0):
+    hw = HullWhiteModel(c, a=a, sigma=sigma)
+    eur = EuropeanSwaption(expiry=2.0, swap_maturity=swap_maturity, strike=strike, notional=notional, is_payer=True)
+    return eur.hull_white_price(hw)
+
+# 2) Re-hedge across market states (parallel rate shifts)
+rate_shifts = np.linspace(-0.01, 0.01, 9)
+berm_values, repl_values = [], []
+swap_units, swaption_units, hedge_error = [], [], []
+
+for s in rate_shifts:
+    c = bump_curve(curve, float(s))
+    swap = InterestRateSwap(swap_maturity, strike, notional=notional, is_payer=True)
+
+    # Match Bermudan delta + vega with two hedge instruments (swap + European swaption)
+    berm_delta = engine.compute_delta(lambda cc: bermudan_price(cc), c)
+    swap_delta = engine.compute_delta(lambda cc: swap.npv(cc), c)
+    eur_delta = engine.compute_delta(lambda cc: european_price(cc), c)
+
+    dsigma = 0.002
+    berm_vega = (bermudan_price(c, sigma0 + dsigma) - bermudan_price(c, sigma0 - dsigma)) / (2 * dsigma)
+    eur_vega = (european_price(c, sigma0 + dsigma) - european_price(c, sigma0 - dsigma)) / (2 * dsigma)
+
+    w_eur = berm_vega / eur_vega if abs(eur_vega) > 1e-10 else 0.0
+    w_swap = (berm_delta - w_eur * eur_delta) / swap_delta if abs(swap_delta) > 1e-10 else 0.0
+
+    berm_v = bermudan_price(c)
+    repl_v = w_swap * swap.npv(c) + w_eur * european_price(c)
+
+    berm_values.append(berm_v)
+    repl_values.append(repl_v)
+    swap_units.append(w_swap)
+    swaption_units.append(w_eur)
+    hedge_error.append(repl_v - berm_v)
+
+# 3) Plot value replication + dynamic hedge-position changes
+x_bp = rate_shifts * 10_000
+fig, axes = plt.subplots(3, 1, figsize=(9, 10), sharex=True)
+
+axes[0].plot(x_bp, berm_values, marker="o", label="Bermudan swaption")
+axes[0].plot(x_bp, repl_values, marker="s", linestyle="--", label="Replication portfolio")
+axes[0].set_ylabel("Value")
+axes[0].legend()
+axes[0].grid(alpha=0.3)
+
+axes[1].plot(x_bp, swap_units, marker="o", label="Swap units")
+axes[1].plot(x_bp, swaption_units, marker="s", label="European swaption units")
+axes[1].set_ylabel("Hedge units")
+axes[1].legend()
+axes[1].grid(alpha=0.3)
+
+axes[2].plot(x_bp, hedge_error, marker="o", color="tab:red")
+axes[2].axhline(0.0, color="black", linewidth=1)
+axes[2].set_xlabel("Parallel rate shift (bp)")
+axes[2].set_ylabel("Replication error")
+axes[2].grid(alpha=0.3)
+
+plt.tight_layout()
+plt.show()
+```
+
 ---
 
 ## Running Tests

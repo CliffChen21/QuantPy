@@ -5,6 +5,7 @@ import pytest
 
 from quantpy.curves import DiscountCurve
 from quantpy.models import HullWhiteModel
+from quantpy.risk import RiskEngine
 from quantpy.instruments import (
     InterestRateSwap,
     Cap,
@@ -180,6 +181,49 @@ def test_bermudan_lower_bound(hw, curve):
 def test_bermudan_repr():
     berm = BermudanSwaption(expiries=[1.0, 2.0], swap_maturity=5.0, strike=0.04)
     assert "BermudanSwaption" in repr(berm)
+
+
+def test_bermudan_dynamic_hedge_positions(curve):
+    expiries = [1.0, 2.0, 3.0, 4.0]
+    swap_maturity = 5.0
+    strike = curve.par_swap_rate(swap_maturity)
+    notional = 1_000_000
+    a, sigma0 = 0.05, 0.01
+    dsigma = 0.002
+
+    def bump_curve(shift):
+        bumped = [df * math.exp(-shift * t) for t, df in zip(curve._times, curve._dfs)]
+        return DiscountCurve(list(curve._times), bumped)
+
+    def berm_price(c, sigma=sigma0):
+        hw_model = HullWhiteModel(c, a=a, sigma=sigma)
+        berm = BermudanSwaption(expiries, swap_maturity, strike, notional=notional, is_payer=True)
+        return berm.hull_white_price(hw_model, n_time_steps=30)
+
+    def euro_price(c, sigma=sigma0):
+        hw_model = HullWhiteModel(c, a=a, sigma=sigma)
+        eur = EuropeanSwaption(expiry=2.0, swap_maturity=swap_maturity, strike=strike, notional=notional, is_payer=True)
+        return eur.hull_white_price(hw_model)
+
+    engine = RiskEngine(rate_bump=1e-4)
+    swap_units, swaption_units = [], []
+    for shift in (-0.005, 0.0, 0.005):
+        c = bump_curve(shift)
+        swap = InterestRateSwap(maturity=swap_maturity, fixed_rate=strike, notional=notional, is_payer=True)
+
+        berm_delta = engine.compute_delta(lambda cc: berm_price(cc), c)
+        swap_delta = engine.compute_delta(lambda cc: swap.npv(cc), c)
+        eur_delta = engine.compute_delta(lambda cc: euro_price(cc), c)
+        berm_vega = (berm_price(c, sigma0 + dsigma) - berm_price(c, sigma0 - dsigma)) / (2 * dsigma)
+        eur_vega = (euro_price(c, sigma0 + dsigma) - euro_price(c, sigma0 - dsigma)) / (2 * dsigma)
+
+        w_eur = berm_vega / eur_vega
+        w_swap = (berm_delta - w_eur * eur_delta) / swap_delta
+        swap_units.append(float(w_swap))
+        swaption_units.append(float(w_eur))
+
+    assert max(swap_units) - min(swap_units) > 0.0
+    assert max(swaption_units) - min(swaption_units) > 0.0
 
 
 # ---------------------------------------------------------------------------
